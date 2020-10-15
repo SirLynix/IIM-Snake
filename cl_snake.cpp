@@ -48,26 +48,14 @@ float computeRotationForCorner(const sf::Vector2i& from, const sf::Vector2i& cor
 	}
 }
 
-Snake::Snake(const sf::Vector2i& spawnPosition, const sf::Vector2i& direction, const sf::Color& color) :
-m_color(color),
-m_followingDir(direction)
+void ClientSnake::Draw(sf::RenderTarget& renderTarget, Resources& resources) const
 {
-	Respawn(spawnPosition, direction);
-}
+	sf::Color color;
+	color.r = m_color.r;
+	color.g = m_color.g;
+	color.b = m_color.b;
+	color.a = 0xFF;
 
-void Snake::Advance()
-{
-	for (std::size_t i = m_body.size() - 1; i != 0; i--)
-	{
-		auto& pos = m_body[i];
-		pos = m_body[i - 1];
-	}
-
-	m_body[0] += m_followingDir;
-}
-
-void Snake::Draw(sf::RenderTarget& renderTarget, Resources& resources) const
-{
 	for (std::size_t i = 0; i < m_body.size(); ++i)
 	{
 		const auto& pos = m_body[i];
@@ -103,69 +91,10 @@ void Snake::Draw(sf::RenderTarget& renderTarget, Resources& resources) const
 			}
 		}
 
-		sprite->setColor(m_color);
-		sprite->setPosition(pos.x * cellSize, pos.y * cellSize);
+		sprite->setColor(color);
+		sprite->setPosition(pos.x * CellSize, pos.y * CellSize);
 		sprite->setRotation(rotation);
 
 		renderTarget.draw(*sprite);
 	}
-}
-
-const std::vector<sf::Vector2i>& Snake::GetBody() const
-{
-	return m_body;
-}
-
-sf::Vector2i Snake::GetCurrentDirection() const
-{
-	return m_body[0] - m_body[1];
-}
-
-sf::Vector2i Snake::GetFollowingDirection() const
-{
-	return m_followingDir;
-}
-
-sf::Vector2i Snake::GetHeadPosition() const
-{
-	return m_body[0];
-}
-
-void Snake::Grow()
-{
-	std::size_t lastPartIndex = m_body.size() - 1;
-	sf::Vector2i lastPartDirection = m_body[lastPartIndex] - m_body[lastPartIndex - 1];
-
-	m_body.push_back(m_body.back() + lastPartDirection);
-}
-
-void Snake::Respawn(const sf::Vector2i& spawnPosition, const sf::Vector2i& direction)
-{
-	m_body.clear();
-	m_body.push_back(spawnPosition);
-	m_body.push_back(spawnPosition - direction);
-	m_body.push_back(spawnPosition - direction * 2);
-}
-
-void Snake::SetBody(const std::vector<sf::Vector2i>& body)
-{
-	assert(body.size() >= 3);
-	m_body = body;
-}
-
-void Snake::SetFollowingDirection(const sf::Vector2i& direction)
-{
-	assert(direction.x == 0 || direction.y == 0);
-	m_followingDir = direction;
-}
-
-bool Snake::TestCollision(const sf::Vector2i& position, bool testHead)
-{
-	for (std::size_t i = (testHead) ? 0 : 1; i < m_body.size(); ++i)
-	{
-		if (m_body[i] == position)
-			return true;
-	}
-
-	return false;
 }

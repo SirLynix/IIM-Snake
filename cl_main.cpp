@@ -1,16 +1,27 @@
 #include "sh_constants.hpp"
+#include "sh_protocol.hpp"
 #include "cl_resources.hpp"
 #include "cl_grid.hpp"
 #include "cl_snake.hpp"
 #include <SFML/Graphics.hpp>
 #include <SFML/Window.hpp>
 #include <iostream>
+#include <optional>
+#include <WinSock2.h>
+#include <ws2tcpip.h>
 
-const int windowWidth = cellSize * gridWidth;
-const int windowHeight = cellSize * gridHeight;
+struct GameState
+{
+	std::optional<ClientGrid> clientGrid;
+	std::vector<ClientSnake> clientSnakes;
+};
 
-void game();
-void tick(Grid& grid, Snake& snake);
+const int windowWidth = CellSize * GridWidth;
+const int windowHeight = CellSize * GridHeight;
+
+void game(SOCKET sock);
+void handle_message(const std::vector<std::uint8_t>& message, std::size_t offset, GameState& gameState);
+bool receive_message(SOCKET sock, std::vector<std::uint8_t>& pendingData, GameState& gameState);
 
 int main()
 {
@@ -19,20 +30,58 @@ int main()
 	// mais ils sont aussi plus verbeux / complexes à utiliser, ce n'est pas très intéressant ici.
 	std::srand(std::time(nullptr));
 
-	/*
-	// Désactivation de l'algorithme de naggle sur la socket `sock`
+	WSADATA data;
+	WSAStartup(MAKEWORD(2, 2), &data); //< MAKEWORD compose un entier 16bits à partir de deux entiers 8bits utilisés par WSAStartup pour connaître la version à initialiser
+
+	SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (sock == INVALID_SOCKET)
+	{
+		// En cas d'erreur avec Winsock, la fonction WSAGetLastError() permet de récupérer le dernier code d'erreur
+		// Sous POSIX l'équivalent est errno
+		std::cerr << "failed to open socket (" << WSAGetLastError() << ")\n";
+		return EXIT_FAILURE;
+	}
+
 	BOOL option = 1;
 	if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&option), sizeof(option)) == SOCKET_ERROR)
 	{
-		std::cerr << "failed to disable Naggle's algorithm (" << WSAGetLastError() << ")\n";
+		std::cerr << "failed to disable Nagle's algorithm (" << WSAGetLastError() << ")\n";
 		return EXIT_FAILURE;
 	}
-	*/
 
-	game();
+	for (;;)
+	{
+		std::string ipAddress;
+		std::cout << "Please enter server address:" << std::endl;
+		std::cin >> ipAddress;
+
+		sockaddr_in serverAddress;
+		serverAddress.sin_family = AF_INET;
+		serverAddress.sin_port = htons(AppPort);
+
+		if (inet_pton(AF_INET, ipAddress.data(), &serverAddress.sin_addr.s_addr) != 1)
+		{
+			std::cerr << "Invalid IP address" << std::endl;
+			continue;
+		}
+
+		if (connect(sock, (sockaddr*)&serverAddress, sizeof(serverAddress)) != 0)
+		{
+			std::cerr << "failed to connect" << std::endl;
+			continue;
+		}
+
+		break;
+	}
+
+	game(sock);
+
+	closesocket(sock);
+
+	WSACleanup();
 }
 
-void game()
+void game(SOCKET sock)
 {
 	// Chargement des assets du jeu
 	Resources resources;
@@ -46,30 +95,12 @@ void game()
 	// Étant donné que l'origine de tous les objets est au centre, il faut décaler la caméra d'autant pour garder
 	// une logique de grille à l'affichage
 	sf::Vector2f viewSize(windowWidth, windowHeight);
-	sf::Vector2f viewCenter = viewSize / 2.f - sf::Vector2f(cellSize, cellSize) / 2.f;
+	sf::Vector2f viewCenter = viewSize / 2.f - sf::Vector2f(CellSize, CellSize) / 2.f;
 	window.setView(sf::View(viewCenter, viewSize));
 
-	// On déclare la grille des éléments statiques (murs, pommes)
-	// Les éléments statiques sont ceux qui évoluent très peu dans le jeu, comparativement aux serpents qui évoluent à chaque
-	// tour de jeu ("tick")
-	Grid grid(gridWidth, gridHeight);
+	GameState gameState;
 
-	// On déclare le serpent du joueur qu'on fait apparaitre au milieu de la grille, pointant vers la droite
-	// Note : les directions du serpent sont représentées par le décalage en X ou en Y nécessaire pour passer à la case suivante.
-	// Ces valeurs doivent toujours être à 1 ou -1 et la valeur de l'autre axe doit être à zéro (nos serpents ne peuvent pas se déplacer
-	// en diagonale)
-	Snake snake(sf::Vector2i(gridWidth / 2, gridHeight / 2), sf::Vector2i(1, 0), sf::Color::Green);
-
-	// On déclare quelques petits outils pour gérer le temps
-	sf::Clock clock;
-	
-	// Temps entre les ticks (tours de jeu)
-	sf::Time tickInterval = sf::seconds(tickDelay);
-	sf::Time nextTick = clock.getElapsedTime() + tickInterval;
-
-	// Temps entre les apparitions de pommes
-	sf::Time appleInterval = sf::seconds(5.f);
-	sf::Time nextApple = clock.getElapsedTime() + appleInterval;
+	std::vector<std::uint8_t> pendingData;
 
 	while (window.isOpen())
 	{
@@ -87,25 +118,25 @@ void game()
 				// Une touche a été enfoncée par l'utilisateur
 				case sf::Event::KeyPressed:
 				{
-					sf::Vector2i direction = sf::Vector2i(0, 0);
+					std::optional<SnakeDirection> direction;
 
 					// On met à jour la direction si la touche sur laquelle l'utilisateur a appuyée est une flèche directionnelle
 					switch (event.key.code)
 					{
 						case sf::Keyboard::Up:
-							direction = sf::Vector2i(0, -1);
+							direction = SnakeDirection::Up;
 							break;
 
 						case sf::Keyboard::Down:
-							direction = sf::Vector2i(0, 1);
+							direction = SnakeDirection::Down;
 							break;
 
 						case sf::Keyboard::Left:
-							direction = sf::Vector2i(-1, 0);
+							direction = SnakeDirection::Left;
 							break;
 
 						case sf::Keyboard::Right:
-							direction = sf::Vector2i(1, 0);
+							direction = SnakeDirection::Right;
 							break;
 
 						default:
@@ -113,11 +144,18 @@ void game()
 					}
 
 					// On applique la direction, si modifiée, au serpent
-					if (direction != sf::Vector2i(0, 0))
+					if (direction)
 					{
-						// On interdit au serpent de faire un demi-tour complet
-						if (direction != -snake.GetCurrentDirection())
-							snake.SetFollowingDirection(direction);
+						std::vector<std::uint8_t> packet;
+						std::size_t sizeOffset = packet.size();
+						Serialize_u16(packet, 0);
+						Serialize_u8(packet, static_cast<std::uint8_t>(Opcode::C_UpdateDirection));
+						Serialize_u8(packet, static_cast<std::uint8_t>(*direction));
+
+						Serialize_u16(packet, sizeOffset, packet.size() - sizeof(std::uint16_t));
+
+						if (send(sock, reinterpret_cast<const char*>(packet.data()), packet.size(), 0) == SOCKET_ERROR)
+							std::cerr << "failed to send data to server (" << WSAGetLastError() << ")" << std::endl;
 					}
 					break;
 				}
@@ -127,81 +165,143 @@ void game()
 			}
 		}
 
-		sf::Time now = clock.getElapsedTime();
-		
-		// On vérifie si assez de temps s'est écoulé pour faire avancer la logique du jeu
-		if (now >= nextTick)
+		if (!receive_message(sock, pendingData, gameState))
 		{
-			// On met à jour la logique du jeu
-			tick(grid, snake);
-
-			// On prévoit la prochaine mise à jour
-			nextTick += tickInterval;
-		}
-
-		// On vérifie si assez de temps s'est écoulé pour faire apparaitre une nouvelle pomme
-		if (now >= nextApple)
-		{
-			// On évite de remplacer un mur par une pomme ...
-			int x = 1 + rand() % (gridWidth - 2);
-			int y = 1 + rand() % (gridHeight - 2);
-
-			// On évite de faire apparaitre une pomme sur un serpent
-			// si c'est le cas on retentera au prochain tour de boucle
-			if (!snake.TestCollision(sf::Vector2i(x, y), true))
-			{
-				grid.SetCell(x, y, CellType::Apple);
-
-				// On prévoit la prochaine apparition de pomme
-				nextApple += appleInterval;
-			}
+			// Got disconnected
+			window.close();
+			break;
 		}
 
 		// On remplit la scène d'une couleur plus jolie pour les yeux
 		window.clear(sf::Color(247, 230, 151));
 
 		// On affiche les éléments statiques
-		grid.Draw(window, resources);
+		if (gameState.clientGrid)
+			gameState.clientGrid->Draw(window, resources);
 
 		// On affiche le serpent
-		snake.Draw(window, resources);
+		for (ClientSnake& snake : gameState.clientSnakes)
+			snake.Draw(window, resources);
 
 		// On actualise l'affichage de la fenêtre
 		window.display();
 	}
 }
 
-void tick(Grid& grid, Snake& snake)
+void handle_message(const std::vector<std::uint8_t>& message, std::size_t offset, GameState& gameState)
 {
-	snake.Advance();
-
-	// On teste la collision de la tête du serpent avec la grille
-	sf::Vector2i headPos = snake.GetHeadPosition();
-	switch (grid.GetCell(headPos.x, headPos.y))
+	Opcode opcode = static_cast<Opcode>(Unserialize_u8(message, offset));
+	switch (opcode)
 	{
-		case CellType::Apple:
+		case Opcode::S_GameState:
 		{
-			// Le serpent mange une pomme, faisons-la disparaitre et faisons grandir le serpent !
-			grid.SetCell(headPos.x, headPos.y, CellType::None);
-			snake.Grow();
+			std::uint8_t snakeCount = Unserialize_u8(message, offset);
+
+			gameState.clientSnakes.clear();
+			gameState.clientSnakes.reserve(snakeCount);
+
+			for (std::uint8_t i = 0; i < snakeCount; ++i)
+			{
+				Color color = Unserialize_color(message, offset);
+				std::uint16_t snakeBodyParts = Unserialize_u16(message, offset);
+				std::vector<sf::Vector2i> snakeBody(snakeBodyParts);
+				for (sf::Vector2i& pos : snakeBody)
+				{
+					pos.x = Unserialize_i8(message, offset);
+					pos.y = Unserialize_i8(message, offset);
+				}
+
+				gameState.clientSnakes.emplace_back(std::move(snakeBody), sf::Vector2i(1, 0), color);
+			}
 			break;
 		}
 
-		case CellType::Wall:
+		case Opcode::S_GridState:
 		{
-			// Le serpent s'est pris un mur, on le fait réapparaitre
-			snake.Respawn(sf::Vector2i(gridWidth / 2, gridHeight / 2), sf::Vector2i(1, 0));
+			int gridWidth = Unserialize_u8(message, offset);
+			int gridHeight = Unserialize_u8(message, offset);
+
+			gameState.clientGrid.emplace(gridWidth, gridHeight);
+
+			std::size_t fullCellCount = Unserialize_u16(message, offset);
+			for (std::size_t i = 0; i < fullCellCount; ++i)
+			{
+				int x = Unserialize_u8(message, offset);
+				int y = Unserialize_u8(message, offset);
+				CellType cellType = static_cast<CellType>(Unserialize_u8(message, offset));
+
+				gameState.clientGrid->SetCell(x, y, cellType);
+			}
 			break;
 		}
 
-		case CellType::None:
-			break; //< rien à faire
+		case Opcode::S_GridUpdate:
+		{
+			int x = Unserialize_u8(message, offset);
+			int y = Unserialize_u8(message, offset);
+			CellType cellType = static_cast<CellType>(Unserialize_u8(message, offset));
+
+			gameState.clientGrid->SetCell(x, y, cellType);
+			break;
+		}
+	}
+}
+
+bool receive_message(SOCKET sock, std::vector<std::uint8_t>& pendingData, GameState& gameState)
+{
+	WSAPOLLFD pollDescriptor;
+	pollDescriptor.fd = sock;
+	pollDescriptor.events = POLLRDNORM;
+	pollDescriptor.revents = 0;
+
+	int activeSockets = WSAPoll(&pollDescriptor, 1, 0);
+	if (activeSockets == SOCKET_ERROR)
+	{
+		std::cerr << "failed to poll sockets (" << WSAGetLastError() << ")\n";
+		return false;
 	}
 
-	// On vérifie maintenant que le serpent n'est pas en collision avec lui-même
-	if (snake.TestCollision(headPos, false))
+	if (activeSockets > 0)
 	{
-		// Le serpent s'est tué tout seul, on le fait réapparaitre
-		snake.Respawn(sf::Vector2i(gridWidth / 2, gridHeight / 2), sf::Vector2i(1, 0));
+		char buffer[1024];
+		int byteRead = recv(sock, buffer, sizeof(buffer), 0);
+		if (byteRead == SOCKET_ERROR || byteRead == 0)
+		{
+			// Une erreur s'est produite ou le nombre d'octets lus est de zéro, indiquant une déconnexion
+			// on adapte le message en fonction.
+			if (byteRead == SOCKET_ERROR)
+				std::cerr << "failed to read from server (" << WSAGetLastError() << "), disconnecting..." << std::endl;
+			else
+				std::cout << "server disconnected" << std::endl;
+
+			return false;
+		}
+
+		std::size_t oldSize = pendingData.size();
+		pendingData.resize(oldSize + byteRead);
+		std::memcpy(&pendingData[oldSize], buffer, byteRead);
+
+		while (pendingData.size() >= sizeof(std::uint16_t))
+		{
+			// -- Réception du message --
+
+			// On déserialise la taille du message
+			std::uint16_t messageSize;
+			std::memcpy(&messageSize, &pendingData[0], sizeof(messageSize));
+
+			messageSize = ntohs(messageSize);
+
+			if (pendingData.size() - sizeof(messageSize) < messageSize)
+				break;
+
+			// Handle message
+			handle_message(pendingData, sizeof(messageSize), gameState);
+
+			// On retire la taille que nous de traiter des données en attente
+			std::size_t handledSize = sizeof(messageSize) + messageSize;
+			pendingData.erase(pendingData.begin(), pendingData.begin() + handledSize);
+		}
 	}
+
+	return true;
 }

@@ -8,7 +8,7 @@ bool LoadResources(Resources& resources)
 		return false;
 
 	float origin = tileSize / 2.f;
-	float scale = static_cast<float>(cellSize) / static_cast<float>(tileSize);
+	float scale = static_cast<float>(CellSize) / static_cast<float>(tileSize);
 
 	resources.apple = sf::Sprite(resources.tiles, sf::IntRect(tileSize, tileSize, tileSize, tileSize));
 	resources.apple.setOrigin(origin, origin);
