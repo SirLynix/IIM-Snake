@@ -20,6 +20,7 @@ public:
 	// Retourne la liste des positions occupées par le serpent
 	const std::vector<sf::Vector2i>& GetBody() const;
 
+	// Récupère la couleur du serpent
 	const Color& GetColor() const;
 
 	// Retourne la direction actuelle, celle vers laquelle pointe la tête du serpent

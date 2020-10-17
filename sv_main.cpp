@@ -264,7 +264,7 @@ int server(SOCKET sock)
 							if (client.pendingData.size() - sizeof(messageSize) < messageSize)
 								break;
 
-							// Handle message
+							// On traite le message reçu pour ce client
 							handle_message(client, client.pendingData, sizeof(messageSize), gameState);
 
 							// On retire la taille que nous de traiter des données en attente
@@ -294,6 +294,7 @@ int server(SOCKET sock)
 
 void broadcast_grid_update(GameState& gameState, int cellX, int cellY)
 {
+	// Envoi d'un paquet de mise à jour d'une cellule de la grille
 	std::vector<std::uint8_t> packet;
 	std::size_t sizeOffset = packet.size();
 	Serialize_u16(packet, 0);
@@ -314,6 +315,7 @@ void broadcast_grid_update(GameState& gameState, int cellX, int cellY)
 
 void handle_message(Player& player, const std::vector<std::uint8_t>& message, std::size_t offset, GameState& gameState)
 {
+	// On traite les messages reçus par un joueur, différenciés par l'opcode
 	Opcode opcode = static_cast<Opcode>(Unserialize_u8(message, offset));
 	switch (opcode)
 	{
@@ -353,6 +355,7 @@ void handle_message(Player& player, const std::vector<std::uint8_t>& message, st
 
 void send_grid(GameState& gameState, Player& player)
 {
+	// Envoi de toute la grille à un joueur
 	std::vector<std::uint8_t> packet;
 	std::size_t sizeOffset = packet.size();
 	Serialize_u16(packet, 0);
@@ -393,7 +396,7 @@ void tick(GameState& gameState, const sf::Time& now)
 {
 	if (now >= gameState.nextAppleSpawn)
 	{
-		// On �vite de remplacer un mur par une pomme ...
+		// On évite de placer une pomme sur une case pleine (ou un serpent)
 		int x = rand() % gameState.grid.GetWidth();
 		int y = rand() % gameState.grid.GetHeight();
 
@@ -415,6 +418,7 @@ void tick(GameState& gameState, const sf::Time& now)
 
 			if (!snakeTest)
 			{
+				// La voie est libre, faisons apparaitre la pomme
 				gameState.grid.SetCell(x, y, CellType::Apple);
 				broadcast_grid_update(gameState, x, y);
 
@@ -423,6 +427,7 @@ void tick(GameState& gameState, const sf::Time& now)
 		}
 	}
 
+	// On fait d'abord avancer tous les serpents avant de résoudre les collisions
 	for (Player& player : gameState.players)
 	{
 		if (!player.snake)
@@ -431,6 +436,7 @@ void tick(GameState& gameState, const sf::Time& now)
 		player.snake->Advance();
 	}
 
+	// On teste les collisions
 	for (std::size_t i = 0; i < gameState.players.size(); ++i)
 	{
 		Player& player = gameState.players[i];
@@ -487,6 +493,7 @@ void tick(GameState& gameState, const sf::Time& now)
 		}
 	}
 
+	// Envoi de l'état de tous les serpents à tout le monde
 	std::vector<std::uint8_t> packet;
 	std::size_t sizeOffset = packet.size();
 	Serialize_u16(packet, 0);
