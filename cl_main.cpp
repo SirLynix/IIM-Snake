@@ -74,6 +74,13 @@ int main()
 		break;
 	}
 
+	u_long noBlocking = 1;
+	if (ioctlsocket(sock, FIONBIO, &noBlocking) == SOCKET_ERROR)
+	{
+		std::cout << "failed to set socket blocking mode: " << WSAGetLastError() << std::endl;
+		return EXIT_FAILURE;
+	}
+
 	game(sock);
 
 	closesocket(sock);
@@ -249,58 +256,49 @@ void handle_message(const std::vector<std::uint8_t>& message, std::size_t offset
 
 bool receive_message(SOCKET sock, std::vector<std::uint8_t>& pendingData, GameState& gameState)
 {
-	WSAPOLLFD pollDescriptor;
-	pollDescriptor.fd = sock;
-	pollDescriptor.events = POLLRDNORM;
-	pollDescriptor.revents = 0;
-
-	int activeSockets = WSAPoll(&pollDescriptor, 1, 0);
-	if (activeSockets == SOCKET_ERROR)
+	char buffer[1024];
+	int byteRead = recv(sock, buffer, sizeof(buffer), 0);
+	if (byteRead == SOCKET_ERROR || byteRead == 0)
 	{
-		std::cerr << "failed to poll sockets (" << WSAGetLastError() << ")\n";
+		// Une erreur s'est produite ou le nombre d'octets lus est de zéro, indiquant une déconnexion
+		// on adapte le message en fonction.
+		if (byteRead == SOCKET_ERROR)
+		{
+			int lastError = WSAGetLastError();
+			if (lastError == WSAEWOULDBLOCK)
+				return true;
+
+			std::cerr << "failed to read from server (" << WSAGetLastError() << "), disconnecting..." << std::endl;
+		}
+		else
+			std::cout << "server disconnected" << std::endl;
+
 		return false;
 	}
 
-	if (activeSockets > 0)
+	std::size_t oldSize = pendingData.size();
+	pendingData.resize(oldSize + byteRead);
+	std::memcpy(&pendingData[oldSize], buffer, byteRead);
+
+	while (pendingData.size() >= sizeof(std::uint16_t))
 	{
-		char buffer[1024];
-		int byteRead = recv(sock, buffer, sizeof(buffer), 0);
-		if (byteRead == SOCKET_ERROR || byteRead == 0)
-		{
-			// Une erreur s'est produite ou le nombre d'octets lus est de zéro, indiquant une déconnexion
-			// on adapte le message en fonction.
-			if (byteRead == SOCKET_ERROR)
-				std::cerr << "failed to read from server (" << WSAGetLastError() << "), disconnecting..." << std::endl;
-			else
-				std::cout << "server disconnected" << std::endl;
+		// -- Réception du message --
 
-			return false;
-		}
+		// On déserialise la taille du message
+		std::uint16_t messageSize;
+		std::memcpy(&messageSize, &pendingData[0], sizeof(messageSize));
 
-		std::size_t oldSize = pendingData.size();
-		pendingData.resize(oldSize + byteRead);
-		std::memcpy(&pendingData[oldSize], buffer, byteRead);
+		messageSize = ntohs(messageSize);
 
-		while (pendingData.size() >= sizeof(std::uint16_t))
-		{
-			// -- Réception du message --
+		if (pendingData.size() - sizeof(messageSize) < messageSize)
+			break;
 
-			// On déserialise la taille du message
-			std::uint16_t messageSize;
-			std::memcpy(&messageSize, &pendingData[0], sizeof(messageSize));
+		// Handle message
+		handle_message(pendingData, sizeof(messageSize), gameState);
 
-			messageSize = ntohs(messageSize);
-
-			if (pendingData.size() - sizeof(messageSize) < messageSize)
-				break;
-
-			// Handle message
-			handle_message(pendingData, sizeof(messageSize), gameState);
-
-			// On retire la taille que nous de traiter des données en attente
-			std::size_t handledSize = sizeof(messageSize) + messageSize;
-			pendingData.erase(pendingData.begin(), pendingData.begin() + handledSize);
-		}
+		// On retire la taille que nous de traiter des données en attente
+		std::size_t handledSize = sizeof(messageSize) + messageSize;
+		pendingData.erase(pendingData.begin(), pendingData.begin() + handledSize);
 	}
 
 	return true;
